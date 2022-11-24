@@ -5,9 +5,9 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 from typing import Optional, List
 
-from basicsr.archs.vqgan_arch import *
-from basicsr.utils import get_root_logger
-from basicsr.utils.registry import ARCH_REGISTRY
+from CodeFormer.basicsr.archs.vqgan_arch import *
+# from basicsr.utils import get_root_logger
+# from basicsr.utils.registry import ARCH_REGISTRY
 
 def calc_mean_std(feat, eps=1e-5):
     """Calculate mean and std for adaptive_instance_normalization.
@@ -157,7 +157,7 @@ class Fuse_sft_block(nn.Module):
         return out
 
 
-@ARCH_REGISTRY.register()
+# @ARCH_REGISTRY.register()
 class CodeFormer(VQAutoEncoder):
     def __init__(self, dim_embd=512, n_head=8, n_layers=9, 
                 codebook_size=1024, latent_size=256,
