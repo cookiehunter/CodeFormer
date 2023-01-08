@@ -274,3 +274,69 @@ class CodeFormer(VQAutoEncoder):
         out = x
         # logits doesn't need softmax before cross_entropy loss
         return out, logits, lq_feat
+
+    def interpolate_forward(self, x, t=None, src=None, dst=None, t_power=None, w=0, detach_16=True, code_only=False, adain=False):
+        # ################### Encoder #####################
+        enc_feat_dict = {}
+        out_list = [self.fuse_encoder_block[f_size] for f_size in self.connect_list]
+        for i, block in enumerate(self.encoder.blocks):
+            x = block(x) 
+            if i in out_list:
+                enc_feat_dict[str(x.shape[-1])] = x.clone()
+
+        lq_feat = x
+        # ################# Transformer ###################
+        # quant_feat, codebook_loss, quant_stats = self.quantize(lq_feat)
+        pos_emb = self.position_emb.unsqueeze(1).repeat(1,x.shape[0],1)
+        # BCHW -> BC(HW) -> (HW)BC
+        feat_emb = self.feat_emb(lq_feat.flatten(2).permute(2,0,1))
+        query_emb = feat_emb
+        # Transformer encoder
+        for layer in self.ft_layers:
+            query_emb = layer(query_emb, query_pos=pos_emb)
+
+        # output logits
+        logits = self.idx_pred_layer(query_emb) # (hw)bn
+        logits = logits.permute(1,0,2) # (hw)bn -> b(hw)n
+
+        if code_only: # for training stage II
+          # logits doesn't need softmax before cross_entropy loss
+            return logits, lq_feat
+
+        # ################# Quantization ###################
+        # if self.training:
+        #     quant_feat = torch.einsum('btn,nc->btc', [soft_one_hot, self.quantize.embedding.weight])
+        #     # b(hw)c -> bc(hw) -> bchw
+        #     quant_feat = quant_feat.permute(0,2,1).view(lq_feat.shape)
+        # ------------
+        soft_one_hot = F.softmax(logits, dim=2)
+        _, top_idx = torch.topk(soft_one_hot, 1, dim=2)
+        quant_feat = self.quantize.get_codebook_feat(top_idx, shape=[x.shape[0],16,16,256])
+        # preserve gradients
+        # quant_feat = lq_feat + (quant_feat - lq_feat).detach()
+
+        if detach_16:
+            quant_feat = quant_feat.detach() # for training stage III
+        if adain:
+            quant_feat = adaptive_instance_normalization(quant_feat, lq_feat)
+
+        # ################## Generator ####################
+        if t is not None:
+            x = (1-t)*src + t*dst
+            if t_power is not None:
+                x = t_power * x + (1-t_power) * quant_feat
+        elif src is not None:
+            x = src
+        else:
+            x = quant_feat
+        fuse_list = [self.fuse_generator_block[f_size] for f_size in self.connect_list]
+
+        for i, block in enumerate(self.generator.blocks):
+            x = block(x) 
+            if i in fuse_list: # fuse after i-th block
+                f_size = str(x.shape[-1])
+                if w>0:
+                    x = self.fuse_convs_dict[f_size](enc_feat_dict[f_size].detach(), x, w)
+        out = x
+        # logits doesn't need softmax before cross_entropy loss
+        return out, logits, lq_feat, quant_feat
